@@ -10,6 +10,7 @@ On each deploy, it will generate a new clean installation (be careful, because i
 
 The usage is really simple, if you don't pass any of the arguments, you will be asked for it on runtime:
 
+<pre>
 $ ssshsync [arguments]
 
 Arguments:
@@ -29,3 +30,4 @@ Arguments:
 -f <directory> SSH destination directory  
 -x Loads fixtures  
 -c Clean local project generated files and database
+</pre>
