@@ -1,0 +1,205 @@
+#!/bin/bash
+# Juan F "maxtorete" Fernández at SpartUp
+
+echo ""
+
+#This is the usage of this command
+BASE_NAME=`basename $0`
+LOAD_FIXTURES=false
+USAGE="$BASE_NAME [arguments]
+
+Arguments:
+-n <name> Project name
+-t <tag> Git tag to be deployed
+-g <url> Git host url
+-p <protocol> Git protocol
+-u <username> Git username
+-U <username> Local database user
+-r <username> Local database user with CREATE and DROP database permissions
+-H <host> Remote database host
+-d <name> Remote database name
+-R <username> Remote database username
+-S <host> SSH host
+-s <username> SSH username
+-f <directory> SSH destination directory
+-x Loads fixtures
+-c Clean local project generated files and database
+"
+
+#Load the arguments
+while getopts hn:t:g:p:u:U:r:H:d:R:S:s:f:xc option
+do
+    case $option in
+        h)
+               echo "$USAGE"
+               exit 1
+               ;;
+        n) PROJECT_NAME=$OPTARG
+        ;;
+        t) TAG=$OPTARG
+        ;;
+        g) GIT_HOST=$OPTARG
+        ;;
+        p) GIT_PROTOCOL=$OPTARG
+        ;;
+        u) GIT_USER=$OPTARG
+        ;;
+        U) LOCAL_DATABASE_USERNAME=$OPTARG
+        ;;
+        r) LOCAL_DATABASE_ROOT_USERNAME=$OPTARG
+        ;;
+        H) REMOTE_DATABASE_HOST=$OPTARG
+        ;;
+        d) REMOTE_DATABASE_NAME=$OPTARG
+        ;;
+        R) REMOTE_DATABASE_USER=$OPTARG
+        ;;
+        S) SSH_HOST=$OPTARG
+        ;;
+        s) SSH_USER=$OPTARG
+        ;;
+        f) SSH_DIRECTORY=$OPTARG
+        ;;
+        x) LOAD_FIXTURES=true
+        ;;
+        c) CLEAN_ENVIROMENT=true
+        ;;
+        ?) echo "Wrong args provided, try something like $USAGE"
+        ;;
+    esac
+done
+
+if [ -e ${PROJECT_NAME}_$TAG ]; then
+    read -p "Directory ${PROJECT_NAME}_$TAG exists, delete it and proceed? (y/n)" choice
+    if [[ $choice != 'y' &&  $choice != 'Y' ]]; then
+        exit
+    fi
+    rm -rf ${PROJECT_NAME}_$TAG
+fi
+
+if [[ $PROJECT_NAME = "" ]]; then
+    echo "Type project name:"
+    read PROJECT_NAME
+fi
+
+if [[ $TAG = "" ]]; then
+    echo "Type git tag to deploy:"
+    read TAG
+fi
+
+echo "Type git password:"
+read -s GIT_PASSWORD
+
+if [[ $LOCAL_DATABASE_USERNAME = "" ]]; then
+    echo "Type local database username:"
+    read LOCAL_DATABASE_USERNAME
+fi
+
+echo "Type local database user password:"
+read -s LOCAL_DATABASE_PASSWORD
+
+if [[ $LOCAL_DATABASE_ROOT_USERNAME = "" ]]; then
+    echo "Type local database username for user with CREATE and DROP permissions (leave blank to use the same as the local database username):"
+    read LOCAL_DATABASE_ROOT_USERNAME
+    if [[ $LOCAL_DATABASE_ROOT_USERNAME = "" ]]; then
+        LOCAL_DATABASE_ROOT_USERNAME=$LOCAL_DATABASE_USERNAME
+    fi
+fi
+
+echo "Type local database password for user with CREATE and DROP permissions:"
+read -s LOCAL_DATABASE_ROOT_PASSWORD
+
+if [[ $REMOTE_DATABASE_HOST = "" ]]; then
+    echo "Type remote database host:"
+    read REMOTE_DATABASE_HOST
+fi
+
+if [[ $REMOTE_DATABASE_NAME = "" ]]; then
+    echo "Type remote database name:"
+    read REMOTE_DATABASE_NAME
+fi
+
+if [[ $REMOTE_DATABASE_USER = "" ]]; then
+    echo "Type remote database username:"
+    read REMOTE_DATABASE_USER
+fi
+
+echo "Type remote database user password"
+read -s REMOTE_DATABASE_PASSWORD
+
+if [[ $SSH_HOST = "" ]]; then
+    echo "Type SSH host:"
+    read SSH_HOST
+fi
+
+if [[ $SSH_USER = "" ]]; then
+    echo "Type SSH username:"
+    read SSH_USER
+fi
+
+if [[ $SSH_DIRECTORY = "" ]]; then
+    echo "Type SSH directory:"
+    read SSH_DIRECTORY
+fi
+
+git clone -b $TAG $GIT_PROTOCOL://$GIT_USER:$GIT_PASSWORD@$GIT_HOST ${PROJECT_NAME}_$TAG
+cd ${PROJECT_NAME}_$TAG
+composer install --optimize-autoloader
+
+echo "Creating local temp database"
+SANITIZED_TAG=`echo $TAG | sed 's/\.//g'`
+
+
+mysql -u root --password=$LOCAL_DATABASE_ROOT_PASSWORD -e "DROP DATABASE IF EXISTS ${PROJECT_NAME}_$SANITIZED_TAG; CREATE DATABASE ${PROJECT_NAME}_$SANITIZED_TAG DEFAULT CHARACTER SET utf8 DEFAULT COLLATE utf8_general_ci; GRANT ALL ON ${PROJECT_NAME}_$SANITIZED_TAG.* TO $LOCAL_DATABASE_USERNAME"
+
+sed -i "s/^\(.*\)\(database_name\:\).*$/\1\2 ${PROJECT_NAME}_$SANITIZED_TAG/" app/config/parameters.yml
+sed -i "s/^\(.*\)\(database_user\:\).*$/\1\2 $LOCAL_DATABASE_USERNAME/" app/config/parameters.yml
+sed -i "s/^\(.*\)\(database_password\:\).*$/\1\2 $LOCAL_DATABASE_PASSWORD/" app/config/parameters.yml
+
+php app/console --no-interaction doctrine:schema:update --force
+if [[ $LOAD_FIXTURES = true ]]; then
+    php app/console --no-interaction doctrine:fixtures:load
+fi
+php app/console --no-interaction assetic:dump --env=prod --no-debug
+php app/console --no-interaction assets:install web
+php app/console --no-interaction cache:clear --env=prod --no-debug --no-warmup
+
+echo "Dumping local database"
+mysqldump -u $LOCAL_DATABASE_USERNAME --password=$LOCAL_DATABASE_PASSWORD ${PROJECT_NAME}_$SANITIZED_TAG > ${PROJECT_NAME}_$TAG.sql
+
+if [[ $CLEAN_ENVIROMENT = true ]]; then
+    echo "Droping local temp database"
+    mysql -u $LOCAL_DATABASE_ROOT_USERNAME --password=$LOCAL_DATABASE_ROOT_PASSWORD -e "DROP DATABASE ${PROJECT_NAME}_$SANITIZED_TAG;"
+fi
+
+sed -i "s/^\(.*\)\(database_host\:\).*$/\1\2 $REMOTE_DATABASE_HOST/" app/config/parameters.yml
+sed -i "s/^\(.*\)\(database_name\:\).*$/\1\2 $REMOTE_DATABASE_NAME/" app/config/parameters.yml
+sed -i "s/^\(.*\)\(database_user\:\).*$/\1\2 $REMOTE_DATABASE_USER/" app/config/parameters.yml
+sed -i "s/^\(.*\)\(database_password\:\).*$/\1\2 $REMOTE_DATABASE_PASSWORD/" app/config/parameters.yml
+cd ..
+
+tar --exclude-vcs -zcf ${PROJECT_NAME}_$TAG.tar.gz ${PROJECT_NAME}_$TAG
+if [[ $CLEAN_ENVIROMENT = true ]]; then
+    rm -rf ${PROJECT_NAME}_$TAG
+fi
+
+echo "Uploading files to remote. Type remote ssh user password:"
+scp ${PROJECT_NAME}_$TAG.tar.gz $SSH_USER@$SSH_HOST:$SSH_DIRECTORY
+
+if [[ $CLEAN_ENVIROMENT = true ]]; then
+    rm -rf ${PROJECT_NAME}_$TAG.tar.gz
+fi
+
+echo "Deploying on remote. Type remote ssh user password:"
+ssh $SSH_USER@$SSH_HOST "
+cd $SSH_DIRECTORY
+tar -zxf ${PROJECT_NAME}_$TAG.tar.gz
+rm -rf ${PROJECT_NAME}_$TAG.tar.gz
+rm -rf $PROJECT_NAME
+mv ${PROJECT_NAME}_$TAG $PROJECT_NAME
+echo 'Restoring remote database'
+mysql -u $REMOTE_DATABASE_USER --password=$REMOTE_DATABASE_PASSWORD --host=$REMOTE_DATABASE_HOST $REMOTE_DATABASE_NAME < $PROJECT_NAME/${PROJECT_NAME}_$TAG.sql
+rm -f $PROJECT_NAME/${PROJECT_NAME}_$TAG.sql
+history -c
+"
+exit
